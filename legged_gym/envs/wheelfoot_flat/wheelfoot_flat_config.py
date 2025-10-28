@@ -89,23 +89,25 @@ class BipedCfgWF(BaseConfig):
     class commands:
         curriculum = False
         smooth_max_lin_vel_x = 2.0
-        smooth_max_lin_vel_y = 1.0
-        non_smooth_max_lin_vel_x = 1.0
-        non_smooth_max_lin_vel_y = 1.0
+        smooth_max_lin_vel_y = 2.0
+        non_smooth_max_lin_vel_x = 1.5
+        non_smooth_max_lin_vel_y = 1.5
         max_ang_vel_yaw = 3.0
         curriculum_threshold = 0.75
-        num_commands = 3  # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading (in heading mode ang_vel_yaw is recomputed from heading error)
+        num_commands = 6  # relative pose (x, y, yaw) + command velocity (vx, vy, vyaw)
         resampling_time = 5.0  # time before command are changed[s]
         heading_command = False  # if true: compute ang vel command from heading error, only work on adaptive group
         min_norm = 0.1
 
         class ranges:
-            lin_vel_x = [-1.0, 1.0]  # min max [m/s]
+            lin_vel_x = [0, 0]  # min max [m/s]
             lin_vel_y = [0, 0]  # min max [m/s]
-            # lin_vel_x = [-1.7, 1.7]  # min max [m/s]
-            # lin_vel_y = [-1.7, 1.7]  # min max [m/s]
-            ang_vel_yaw = [-0.6, 0.6]  # min max [rad/s]
-            heading = [-3.14159, 3.14159]
+            ang_vel_yaw = [-0.5, 0.5]  # min max [rad/s]
+
+        class command_pose_ranges:
+            init_pos_x = [-0.5, 0.5]  # initial position offset from robot [m]
+            init_pos_y = [-0.5, 0.5]  # initial position offset from robot [m]
+            init_yaw = [-3.14159, 3.14159]  # initial yaw offset [rad]
 
     class gait:
         num_gait_params = 4

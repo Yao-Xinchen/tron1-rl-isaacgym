@@ -58,6 +58,28 @@ class BipedWF(BaseTask):
         # reset robot states
         self._reset_dofs(env_ids)
         self._reset_root_states(env_ids)
+
+        # Initialize command pose with random offset from robot
+        offset_x = (self.cfg.commands.command_pose_ranges.init_pos_x[1] -
+                    self.cfg.commands.command_pose_ranges.init_pos_x[0]) * torch.rand(len(env_ids), device=self.device) + \
+                   self.cfg.commands.command_pose_ranges.init_pos_x[0]
+        offset_y = (self.cfg.commands.command_pose_ranges.init_pos_y[1] -
+                    self.cfg.commands.command_pose_ranges.init_pos_y[0]) * torch.rand(len(env_ids), device=self.device) + \
+                   self.cfg.commands.command_pose_ranges.init_pos_y[0]
+        offset_yaw = (self.cfg.commands.command_pose_ranges.init_yaw[1] -
+                      self.cfg.commands.command_pose_ranges.init_yaw[0]) * torch.rand(len(env_ids), device=self.device) + \
+                     self.cfg.commands.command_pose_ranges.init_yaw[0]
+
+        # Set command pose in world frame
+        self.command_pose[env_ids, 0] = self.base_position[env_ids, 0] + offset_x
+        self.command_pose[env_ids, 1] = self.base_position[env_ids, 1] + offset_y
+        # Extract base yaw from quaternion
+        base_yaw = torch.atan2(2.0 * (self.base_quat[env_ids, 3] * self.base_quat[env_ids, 2] +
+                                      self.base_quat[env_ids, 0] * self.base_quat[env_ids, 1]),
+                               1.0 - 2.0 * (self.base_quat[env_ids, 1]**2 + self.base_quat[env_ids, 2]**2))
+        self.command_pose[env_ids, 2] = base_yaw + offset_yaw
+        self.command_pose[env_ids, 2] = wrap_to_pi(self.command_pose[env_ids, 2])
+
         self._resample_commands(env_ids)
         # self._resample_gaits(env_ids)
 
@@ -171,6 +193,10 @@ class BipedWF(BaseTask):
         super().post_physics_step()
         self.wheel_lin_vel = self.foot_velocities[:, 0, :] + self.foot_velocities[:, 1, :]
 
+        # Update command pose and commands tensor
+        self._update_command_pose()
+        self._update_commands_tensor()
+
     def compute_group_observations(self):
         # note that observation noise need to modified accordingly !!!
         dof_list = [0,1,2,4,5,6]
@@ -184,9 +210,6 @@ class BipedWF(BaseTask):
                 dof_pos * self.obs_scales.dof_pos,
                 self.dof_vel * self.obs_scales.dof_vel,
                 self.actions,
-                # self.clock_inputs_sin.view(self.num_envs, 1),
-                # self.clock_inputs_cos.view(self.num_envs, 1),
-                # self.gaits,
             ),
             dim=-1,
         )
@@ -224,66 +247,77 @@ class BipedWF(BaseTask):
         )
 
     def _resample_commands(self, env_ids):
-        """Randommly select commands of some environments
+        """Randomly sample command velocities for specified environments.
 
         Args:
-            env_ids (List[int]): Environments ids for which new commands are needed
+            env_ids (List[int]): Environment ids for which new command velocities are needed
         """
-        self.commands[env_ids, 0] = (
-            self.command_ranges["lin_vel_x"][env_ids, 1]
-            - self.command_ranges["lin_vel_x"][env_ids, 0]
-        ) * torch.rand(len(env_ids), device=self.device) + self.command_ranges[
-            "lin_vel_x"
-        ][
-            env_ids, 0
-        ]
-        self.commands[env_ids, 1] = (
-            self.command_ranges["lin_vel_y"][env_ids, 1]
-            - self.command_ranges["lin_vel_y"][env_ids, 0]
-        ) * torch.rand(len(env_ids), device=self.device) + self.command_ranges[
-            "lin_vel_y"
-        ][
-            env_ids, 0
-        ]
-        self.commands[env_ids, 2] = (
-            self.command_ranges["ang_vel_yaw"][env_ids, 1]
-            - self.command_ranges["ang_vel_yaw"][env_ids, 0]
-        ) * torch.rand(len(env_ids), device=self.device) + self.command_ranges[
-            "ang_vel_yaw"
-        ][
-            env_ids, 0
-        ]
-        if self.cfg.commands.heading_command:
-            self.commands[env_ids, 3] = torch_rand_float(
-                self.command_ranges["heading"][0],
-                self.command_ranges["heading"][1],
-                (len(env_ids), 1),
-                device=self.device,
-            ).squeeze(1)
+        # Sample command velocities uniformly from ranges
+        self.command_velocity[env_ids, 0] = (
+            self.command_ranges["lin_vel_x"][env_ids, 1] -
+            self.command_ranges["lin_vel_x"][env_ids, 0]
+        ) * torch.rand(len(env_ids), device=self.device) + self.command_ranges["lin_vel_x"][env_ids, 0]
 
-        #set 50% of resample to go straight
-        resample_nums = len(env_ids)
-        env_list = list(range(resample_nums))
-        half_env_list = random.sample(env_list, resample_nums // 2)
-        # forward = quat_apply(self.base_quat[env_ids[half_env_list]], \
-        #                      self.forward_vec[env_ids[half_env_list]])
-        # heading = torch.atan2(forward[:,1], forward[:,0])
-        # self.commands[env_ids[half_env_list], 3] = heading
-        
-        # set 20% of the rest 50% to be stand still
-        rest_env_list = list(set(env_list) - set(half_env_list))
-        zero_cmd_env_idx_ = random.sample(rest_env_list, resample_nums // 2 // 5)
+        self.command_velocity[env_ids, 1] = (
+            self.command_ranges["lin_vel_y"][env_ids, 1] -
+            self.command_ranges["lin_vel_y"][env_ids, 0]
+        ) * torch.rand(len(env_ids), device=self.device) + self.command_ranges["lin_vel_y"][env_ids, 0]
 
-        self.commands[env_ids[zero_cmd_env_idx_], 0] = 0.0
-        self.commands[env_ids[zero_cmd_env_idx_], 1] = 0.0
-        self.commands[env_ids[zero_cmd_env_idx_], 2] = 0.0
-        #use heading
-        if self.cfg.commands.heading_command:
-            forward = quat_apply(self.base_quat[env_ids[zero_cmd_env_idx_]], \
-                                 self.forward_vec[env_ids[zero_cmd_env_idx_]])
-            heading = torch.atan2(forward[:,1], forward[:,0])
-            self.commands[env_ids[zero_cmd_env_idx_], 3] = heading
-            
+        self.command_velocity[env_ids, 2] = (
+            self.command_ranges["ang_vel_yaw"][env_ids, 1] -
+            self.command_ranges["ang_vel_yaw"][env_ids, 0]
+        ) * torch.rand(len(env_ids), device=self.device) + self.command_ranges["ang_vel_yaw"][env_ids, 0]
+
+        # Update commands tensor with current relative pose and new velocities
+        self._update_commands_tensor()
+
+    def _update_command_pose(self):
+        """Integrate command velocity to update command pose.
+        Velocity is in command pose's own frame, need to transform to world frame.
+        """
+        # Convert velocity from command pose frame to world frame
+        cos_yaw = torch.cos(self.command_pose[:, 2])
+        sin_yaw = torch.sin(self.command_pose[:, 2])
+
+        world_vx = cos_yaw * self.command_velocity[:, 0] - sin_yaw * self.command_velocity[:, 1]
+        world_vy = sin_yaw * self.command_velocity[:, 0] + cos_yaw * self.command_velocity[:, 1]
+
+        # Integrate position and orientation
+        self.command_pose[:, 0] += world_vx * self.dt
+        self.command_pose[:, 1] += world_vy * self.dt
+        self.command_pose[:, 2] += self.command_velocity[:, 2] * self.dt
+
+        # Wrap yaw to [-pi, pi]
+        self.command_pose[:, 2] = wrap_to_pi(self.command_pose[:, 2])
+
+    def _compute_relative_pose(self):
+        """Compute command pose relative to base in base frame.
+        Returns: (x, y, yaw) in base_link frame
+        """
+        # Compute relative position in world frame
+        rel_pos_world = self.command_pose[:, :2] - self.base_position[:, :2]
+
+        # Extract base yaw from quaternion (z-axis rotation)
+        base_yaw = torch.atan2(2.0 * (self.base_quat[:, 3] * self.base_quat[:, 2] +
+                                      self.base_quat[:, 0] * self.base_quat[:, 1]),
+                               1.0 - 2.0 * (self.base_quat[:, 1]**2 + self.base_quat[:, 2]**2))
+
+        # Rotate position to base frame
+        cos_base_yaw = torch.cos(-base_yaw)
+        sin_base_yaw = torch.sin(-base_yaw)
+        rel_x = cos_base_yaw * rel_pos_world[:, 0] - sin_base_yaw * rel_pos_world[:, 1]
+        rel_y = sin_base_yaw * rel_pos_world[:, 0] + cos_base_yaw * rel_pos_world[:, 1]
+
+        # Compute relative yaw
+        rel_yaw = wrap_to_pi(self.command_pose[:, 2] - base_yaw)
+
+        return torch.stack([rel_x, rel_y, rel_yaw], dim=-1)
+
+    def _update_commands_tensor(self):
+        """Update self.commands with relative pose and command velocity."""
+        rel_pose = self._compute_relative_pose()  # (x, y, yaw) in base frame
+        self.commands = torch.cat([rel_pose, self.command_velocity], dim=-1)
+
     def _get_noise_scale_vec(self, cfg):
         """Sets a vector used to scale the noise added to the observations.
             [NOTE]: Must be adapted when changing the observations structure
@@ -315,6 +349,11 @@ class BipedWF(BaseTask):
         super()._init_buffers()
         self.wheel_lin_vel = torch.zeros_like(self.foot_velocities)
         self.wheel_ang_vel = torch.zeros_like(self.base_ang_vel)
+
+        # Command pose tracking: pose in world frame (x, y, yaw)
+        self.command_pose = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device, requires_grad=False)
+        # Command velocity in command pose's own frame (vx, vy, vyaw)
+        self.command_velocity = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device, requires_grad=False)
 
     # ------------ reward functions----------------
 
