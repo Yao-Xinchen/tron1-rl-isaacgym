@@ -80,6 +80,16 @@ class BipedWF(BaseTask):
         self.command_pose[env_ids, 2] = base_yaw + offset_yaw
         self.command_pose[env_ids, 2] = wrap_to_pi(self.command_pose[env_ids, 2])
 
+        # Initialize SE3 distance tracking based on initial command pose offset
+        pos_error = torch.sqrt(offset_x**2 + offset_y**2)
+        orient_error = torch.abs(offset_yaw)
+        self.se3_distance_ref[env_ids] = 2 * pos_error + orient_error
+
+        self.optim_pos_distance[env_ids] = pos_error
+        self.optim_orient_distance[env_ids] = orient_error
+        self.pos_improvement[env_ids] = 0.0
+        self.orient_improvement[env_ids] = 0.0
+
         self._resample_commands(env_ids)
         # self._resample_gaits(env_ids)
 
@@ -195,6 +205,7 @@ class BipedWF(BaseTask):
 
         # Update command pose and commands tensor
         self._update_command_pose()
+        self._update_se3_metrics()
         self._update_commands_tensor()
 
     def compute_group_observations(self):
@@ -268,6 +279,26 @@ class BipedWF(BaseTask):
             self.command_ranges["ang_vel_yaw"][env_ids, 0]
         ) * torch.rand(len(env_ids), device=self.device) + self.command_ranges["ang_vel_yaw"][env_ids, 0]
 
+        # Sample decrease velocity for SE3 reference
+        self.se3_decrease_vel[env_ids] = (
+            self.cfg.commands.se3_decrease_vel_range[1] -
+            self.cfg.commands.se3_decrease_vel_range[0]
+        ) * torch.rand(len(env_ids), device=self.device) + \
+          self.cfg.commands.se3_decrease_vel_range[0]
+
+        # Reset SE3 distance reference based on current error
+        self.position_error = self._compute_position_error()
+        self.orientation_error = self._compute_orientation_error()
+        self.se3_distance_ref[env_ids] = (
+            2 * self.position_error[env_ids] + self.orientation_error[env_ids]
+        )
+
+        # Reset optimal tracking
+        self.optim_pos_distance[env_ids] = self.position_error[env_ids]
+        self.optim_orient_distance[env_ids] = self.orientation_error[env_ids]
+        self.pos_improvement[env_ids] = 0.0
+        self.orient_improvement[env_ids] = 0.0
+
         # Update commands tensor with current relative pose and new velocities
         self._update_commands_tensor()
 
@@ -316,7 +347,41 @@ class BipedWF(BaseTask):
     def _update_commands_tensor(self):
         """Update self.commands with relative pose and command velocity."""
         rel_pose = self._compute_relative_pose()  # (x, y, yaw) in base frame
-        self.commands = torch.cat([rel_pose, self.command_velocity], dim=-1)
+        self.commands = torch.cat([rel_pose, self.se3_decrease_vel, self.command_velocity], dim=-1)
+
+    def _compute_position_error(self):
+        """Compute XY position error between base and command pose (in world frame)."""
+        pos_error_xy = self.command_pose[:, :2] - self.base_position[:, :2]
+        return torch.norm(pos_error_xy, dim=-1)
+
+    def _compute_orientation_error(self):
+        """Compute yaw orientation error between base and command pose."""
+        # Extract base yaw from quaternion
+        base_yaw = torch.atan2(2.0 * (self.base_quat[:, 3] * self.base_quat[:, 2] +
+                                      self.base_quat[:, 0] * self.base_quat[:, 1]),
+                               1.0 - 2.0 * (self.base_quat[:, 1]**2 + self.base_quat[:, 2]**2))
+
+        # Compute angular difference
+        yaw_error = wrap_to_pi(self.command_pose[:, 2] - base_yaw)
+        return torch.abs(yaw_error)
+
+    def _update_se3_metrics(self):
+        """Update SE3 distance reference and improvement metrics."""
+        # Compute current errors
+        self.position_error = self._compute_position_error()
+        self.orientation_error = self._compute_orientation_error()
+
+        # Decrease the reference distance over time
+        self.se3_distance_ref -= self.se3_decrease_vel * self.dt
+        self.se3_distance_ref = torch.clamp(self.se3_distance_ref, min=0.0)
+
+        # Track improvement (how much error decreased since last resample)
+        self.pos_improvement = (self.optim_pos_distance - self.position_error).clip(min=0.0)
+        self.orient_improvement = (self.optim_orient_distance - self.orientation_error).clip(min=0.0)
+
+        # Update optimal distances (track minimum errors achieved)
+        self.optim_pos_distance = torch.minimum(self.position_error, self.optim_pos_distance)
+        self.optim_orient_distance = torch.minimum(self.orientation_error, self.optim_orient_distance)
 
     def _get_noise_scale_vec(self, cfg):
         """Sets a vector used to scale the noise added to the observations.
@@ -354,6 +419,18 @@ class BipedWF(BaseTask):
         self.command_pose = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device, requires_grad=False)
         # Command velocity in command pose's own frame (vx, vy, vyaw)
         self.command_velocity = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device, requires_grad=False)
+
+        # SE3 distance tracking
+        self.se3_distance_ref = torch.ones(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
+        self.se3_decrease_vel = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
+
+        # Tracking metrics for position and orientation errors
+        self.position_error = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
+        self.orientation_error = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
+        self.optim_pos_distance = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
+        self.optim_orient_distance = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
+        self.pos_improvement = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
+        self.orient_improvement = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
 
     # ------------ reward functions----------------
 

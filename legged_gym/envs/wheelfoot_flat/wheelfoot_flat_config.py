@@ -98,6 +98,7 @@ class BipedCfgWF(BaseConfig):
         resampling_time = 5.0  # time before command are changed[s]
         heading_command = False  # if true: compute ang vel command from heading error, only work on adaptive group
         min_norm = 0.1
+        se3_decrease_vel_range = [0.5, 1.4]  # Range for decrease velocity [m/s]
 
         class ranges:
             lin_vel_x = [0, 0]  # min max [m/s]
