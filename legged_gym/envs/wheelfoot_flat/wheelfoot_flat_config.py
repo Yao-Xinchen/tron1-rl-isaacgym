@@ -103,7 +103,7 @@ class BipedCfgWF(BaseConfig):
         class ranges:
             lin_vel_x = [0, 0]  # min max [m/s]
             lin_vel_y = [0, 0]  # min max [m/s]
-            ang_vel_yaw = [-0.5, 0.5]  # min max [rad/s]
+            ang_vel_yaw = [-0.0, 0.0]  # min max [rad/s]
 
         class command_pose_ranges:
             init_pos_x = [-0.5, 0.5]  # initial position offset from robot [m]
@@ -229,31 +229,11 @@ class BipedCfgWF(BaseConfig):
 
     class rewards:
         class scales:
-            # termination related rewards
-            keep_balance = 1.0
-
-            # tracking related rewards
-            tracking_lin_vel = 4.0
-            tracking_ang_vel = 2.0
-            tracking_lin_vel_pb = 1.0
-            tracking_ang_vel_pb = 0.2
-
-            # regulation related rewards
-            nominal_foot_position = 4.0
-            leg_symmetry = 0.5
-            same_foot_x_position = -50 # 0.5
-            same_foot_z_position = -100
-            lin_vel_z = -0.3
-            ang_vel_xy = -0.3
-            torques = -0.00016
-            dof_acc = -1.5e-7
-            action_rate = -0.03
-            dof_pos_limits = -2.0
-            collision = -50
-            action_smooth = -0.03
-            orientation = -12.0
-            feet_distance = -100
-            base_height = -20
+            safety = 1.0
+            track_base_position_exp = 2.0
+            track_base_orientation_exp = 3.0
+            track_base_pb = 15.0
+            track_base_reference_exp = 1.5
 
         only_positive_rewards = False  # if true negative total rewards are clipped at zero (avoids early termination problems)
         clip_reward = 100
@@ -280,6 +260,26 @@ class BipedCfgWF(BaseConfig):
         gait_vel_sigma = 0.25
         gait_height_sigma = 0.005
         feet_height_tracking_sigma = 0.005
+
+        # Safety reward parameters
+        safety_std = 0.5  # Standard deviation for exponential kernel
+        nominal_foot_x = 0.0  # Nominal foot X position in base frame [m]
+        nominal_foot_y = 0.17  # Nominal foot Y position in base frame [m] (half of hip width)
+        foot_position_tolerance_x = 0.2  # Tolerance for X position [m]
+        foot_position_tolerance_y = 0.2  # Tolerance for Y position [m]
+        inner_eight_tolerance_y = 0.1  # Tighter tolerance for "inner eight" condition [m]
+        roll_tolerance = 0.1  # Roll tolerance [rad]
+        pitch_tolerance = 0.85  # Pitch tolerance [rad]
+        height_tolerance = 0.1  # Height tolerance [m]
+
+        # Position and orientation tracking parameters
+        track_position_std = 0.5  # Standard deviation for position tracking
+        track_orientation_std = 0.25  # Standard deviation for orientation tracking
+        position_scale_std = 0.5  # Std for position scale in orientation reward
+
+        # Reference tracking parameters
+        track_reference_std = 0.5  # Standard deviation for reference tracking
+        track_reference_release_delta = 0.5  # Release tolerance for reference tracking
 
     class normalization:
         class obs_scales:

@@ -434,124 +434,144 @@ class BipedWF(BaseTask):
 
     # ------------ reward functions----------------
 
-    def _reward_feet_distance(self):
-        # Penalize base height away from target
-        feet_distance = torch.norm(
-            self.foot_positions[:, 0, :2] - self.foot_positions[:, 1, :2], dim=-1
-        )
-        reward = torch.clip(self.cfg.rewards.min_feet_distance - feet_distance, 0, 1) + \
-                 torch.clip(feet_distance - self.cfg.rewards.max_feet_distance, 0, 1)
-        return reward
+    def _reward_safety(self):
+        # Get foot positions in base frame
+        base_quat_expanded = self.base_quat.unsqueeze(1).expand(-1, 2, -1)
+        base_position_expanded = self.base_position.unsqueeze(1).expand(-1, 2, -1)
 
-    def _reward_collision(self):
-        return torch.sum(
-            torch.norm(
-                self.contact_forces[:, self.penalised_contact_indices, :], dim=-1) > 1.0, dim=1)
-
-    def _reward_nominal_foot_position(self):
-        #1. calculate foot postion wrt base in base frame  
-        nominal_base_height = -(self.cfg.rewards.base_height_target- self.cfg.asset.foot_radius)
-        foot_positions_base = self.foot_positions - \
-                            (self.base_position).unsqueeze(1).repeat(1, len(self.feet_indices), 1)
-        reward = 0
-        for i in range(len(self.feet_indices)):
-            foot_positions_base[:, i, :] = quat_rotate_inverse(self.base_quat, foot_positions_base[:, i, :] )
-            height_error = nominal_base_height - foot_positions_base[:, i, 2]
-            reward += torch.exp(-(height_error ** 2)/ self.cfg.rewards.nominal_foot_position_tracking_sigma)
-        vel_cmd_norm = torch.norm(self.commands[:, :3], dim=1)
-        return reward / len(self.feet_indices)*torch.exp(-(vel_cmd_norm ** 2)/self.cfg.rewards.nominal_foot_position_tracking_sigma_wrt_v)
-    
-    def _reward_same_foot_z_position(self):
-        reward = 0
-        foot_positions_base = self.foot_positions - \
-                            (self.base_position).unsqueeze(1).repeat(1, len(self.feet_indices), 1)
-        for i in range(len(self.feet_indices)):
-            foot_positions_base[:, i, :] = quat_rotate_inverse(self.base_quat, foot_positions_base[:, i, :] )
-        foot_z_position_err = foot_positions_base[:,0,2] - foot_positions_base[:,1,2]
-        return foot_z_position_err ** 2
-
-    def _reward_leg_symmetry(self):
-        foot_positions_base = self.foot_positions - \
-                            (self.base_position).unsqueeze(1).repeat(1, len(self.feet_indices), 1)
-        for i in range(len(self.feet_indices)):
-            foot_positions_base[:, i, :] = quat_rotate_inverse(self.base_quat, foot_positions_base[:, i, :] )
-        leg_symmetry_err = (abs(foot_positions_base[:,0,1])-abs(foot_positions_base[:,1,1]))
-        return torch.exp(-(leg_symmetry_err ** 2)/ self.cfg.rewards.leg_symmetry_tracking_sigma)
-
-    def _reward_same_foot_x_position(self):
-        reward = 0
-        foot_positions_base = self.foot_positions - \
-                            (self.base_position).unsqueeze(1).repeat(1, len(self.feet_indices), 1)
-        for i in range(len(self.feet_indices)):
-            foot_positions_base[:, i, :] = quat_rotate_inverse(self.base_quat, foot_positions_base[:, i, :] )
-        foot_x_position_err = foot_positions_base[:,0,0] - foot_positions_base[:,1,0]
-        # reward = torch.exp(-(foot_x_position_err ** 2)/ self.cfg.rewards.foot_x_position_sigma)
-        reward = torch.abs(foot_x_position_err)
-        return reward
-
-    def _reward_lin_vel_z(self):
-        # Penalize z axis base linear velocity
-        return torch.square(self.base_lin_vel[:, 2])
-
-    def _reward_ang_vel_xy(self):
-        # Penalize xy axes base angular velocity
-        return torch.sum(torch.square(self.base_ang_vel[:, :2]), dim=1)
-
-    def _reward_orientation(self):
-        # Penalize non flat base orientation
-        reward = torch.sum(torch.square(self.projected_gravity[:, :2]), dim=1)
-        return reward
-
-    def _reward_torques(self):
-        # Penalize torques
-        return torch.sum(torch.square(self.torques), dim=1)
-
-    def _reward_dof_acc(self):
-        # Penalize dof accelerations
-        return torch.sum(torch.square(self.dof_acc), dim=1)
-
-    def _reward_action_rate(self):
-        # Penalize changes in actions
-        return torch.sum(torch.square(self.actions - self.last_actions[:, :, 0]), dim=1)
-
-    def _reward_action_smooth(self):
-        # Penalize changes in actions
-        return torch.sum(
-            torch.square(
-                self.actions - 2 * self.last_actions[:, :, 0] + self.last_actions[:, :, 1]), dim=1)
-
-    def _reward_keep_balance(self):
-        return torch.ones(
-            self.num_envs, dtype=torch.float, device=self.device, requires_grad=False
+        foot_position_b = quat_rotate_inverse(
+            base_quat_expanded,
+            self.foot_positions - base_position_expanded
         )
 
-    def _reward_dof_pos_limits(self):
-        # Penalize dof positions too close to the limit
-        out_of_limits = -(self.dof_pos - self.dof_pos_limits[:, 0]).clip(max=0.0)  # lower limit
-        out_of_limits += (self.dof_pos - self.dof_pos_limits[:, 1]).clip(min=0.0)
-        return torch.sum(out_of_limits, dim=1)
+        # Compute base height (from root to mean foot height)
+        base_height = (self.base_position[:, 2] -
+                       self.foot_positions[:, :, 2].mean(dim=1) +
+                       self.cfg.asset.foot_radius)
 
-    def _reward_tracking_lin_vel(self):
-        # Tracking of linear velocity commands (xy axes)
-        lin_vel_error = torch.sum(torch.square(self.commands[:, :2] - self.base_lin_vel[:, :2]), dim=1)
-        return torch.exp(-lin_vel_error / self.cfg.rewards.tracking_sigma)
+        # Nominal foot positions in base frame [left, right]
+        nominal_foot_x = self.cfg.rewards.nominal_foot_x
+        nominal_foot_y_left = self.cfg.rewards.nominal_foot_y
+        nominal_foot_y_right = -self.cfg.rewards.nominal_foot_y
 
-    def _reward_tracking_lin_vel_pb(self):
-        delta_phi = ~self.reset_buf * (self._reward_tracking_lin_vel() - self.rwd_linVelTrackPrev)
-        # return ang_vel_error
-        return delta_phi / self.dt
+        # Compute foot position errors
+        # Left foot (index 0), Right foot (index 1)
+        foot_error_x = torch.abs(foot_position_b[:, :, 0] - nominal_foot_x)
+        foot_error_y_left = foot_position_b[:, 0, 1] - nominal_foot_y_left
+        foot_error_y_right = foot_position_b[:, 1, 1] - nominal_foot_y_right
 
-    def _reward_tracking_ang_vel(self):
-        # Tracking of angular velocity commands (yaw)
-        ang_vel_error = torch.square(self.commands[:, 2] - self.base_ang_vel[:, 2])
-        return torch.exp(-ang_vel_error / self.cfg.rewards.ang_tracking_sigma)
+        # Inner-eight condition: feet crossing towards center
+        inner_eight_left = foot_error_y_left < 0.0  # Left foot moving right
+        inner_eight_right = foot_error_y_right > 0.0  # Right foot moving left
 
-    def _reward_tracking_ang_vel_pb(self):
-        delta_phi = ~self.reset_buf * (self._reward_tracking_ang_vel() - self.rwd_angVelTrackPrev)
-        # return ang_vel_error
-        return delta_phi / self.dt
-    
-    def _reward_base_height(self):
-        # Penalize base height away from target
-        base_height = torch.mean(self.root_states[:, 2].unsqueeze(1) - self.measured_heights, dim=1)
-        return torch.abs(base_height - self.cfg.rewards.base_height_target)
+        # Apply different tolerances for inner-eight vs normal
+        foot_error_y_left_norm = torch.where(
+            inner_eight_left,
+            torch.abs(foot_error_y_left) / self.cfg.rewards.inner_eight_tolerance_y,
+            torch.abs(foot_error_y_left) / self.cfg.rewards.foot_position_tolerance_y
+        )
+        foot_error_y_right_norm = torch.where(
+            inner_eight_right,
+            torch.abs(foot_error_y_right) / self.cfg.rewards.inner_eight_tolerance_y,
+            torch.abs(foot_error_y_right) / self.cfg.rewards.foot_position_tolerance_y
+        )
+
+        # Normalize X errors
+        foot_error_x_norm = foot_error_x / self.cfg.rewards.foot_position_tolerance_x
+
+        # Sum all foot errors
+        foot_pos_error_total = (
+            foot_error_x_norm.sum(dim=1) +
+            foot_error_y_left_norm +
+            foot_error_y_right_norm
+        )
+        foot_pos_error_total = torch.clamp(foot_pos_error_total, max=8.0)
+
+        # Base orientation errors from projected gravity
+        base_orient_error_roll = torch.abs(self.projected_gravity[:, 1]) / self.cfg.rewards.roll_tolerance
+        base_orient_error_pitch = torch.abs(self.projected_gravity[:, 0]) / self.cfg.rewards.pitch_tolerance
+
+        # Base height error
+        base_height_error = ((base_height - self.cfg.rewards.base_height_target) /
+                            self.cfg.rewards.height_tolerance) ** 2
+
+        # Compute normalized locomotion error
+        normalized_loco_error = (
+            foot_pos_error_total / 2.0 +  # Weight: 2.0
+            base_orient_error_pitch +     # Weight: 0.5
+            base_orient_error_roll +      # Weight: 0.5
+            base_height_error * 2         # Weight: 1.0
+        ) / 5.0  # Normalize by total weight
+
+        # Compute locomotion safety scale with exponential kernel
+        loco_safety_scale = torch.exp(-normalized_loco_error / (self.cfg.rewards.safety_std ** 2))
+
+        # Store for potential use in other rewards (optional)
+        self._loco_safety_scale = loco_safety_scale + 0.4
+
+        return loco_safety_scale
+
+    def _reward_track_base_position_exp(self):
+        # Position error is already computed in _update_se3_metrics()
+        position_error = self.position_error
+
+        # Normal exponential term
+        normal = torch.exp(-position_error / (self.cfg.rewards.track_position_std ** 2))
+
+        # Micro enhancement (5x more sensitive for fine control)
+        micro_enhancement = torch.exp(-5 * position_error / (self.cfg.rewards.track_position_std ** 2))
+
+        # Combine and scale by safety
+        reward = (normal + micro_enhancement) * 0.5 * self._loco_safety_scale
+
+        return reward
+
+    def _reward_track_base_orientation_exp(self):
+        # Position and orientation errors already computed in _update_se3_metrics()
+        position_error = self.position_error
+        orientation_error = self.orientation_error
+
+        # Position scale: reduce orientation reward when position is far
+        position_scale = torch.exp(-position_error / (self.cfg.rewards.position_scale_std ** 2))
+
+        # Normal exponential term for orientation
+        normal = torch.exp(-orientation_error / (self.cfg.rewards.track_orientation_std ** 2))
+
+        # Micro enhancement (5x more sensitive for fine control)
+        micro_enhancement = torch.exp(-5 * orientation_error / (self.cfg.rewards.track_orientation_std ** 2))
+
+        # Combine and scale by position proximity and safety
+        reward = (normal + micro_enhancement) * position_scale * 0.5 * self._loco_safety_scale
+
+        return reward
+
+    def _reward_track_base_pb(self):
+        # Use optimal distances (best achieved so far) to scale improvements
+        position_scale = torch.exp(-self.optim_pos_distance / (0.5 ** 2))
+        orient_scale = torch.exp(-self.optim_orient_distance / (0.5 ** 2))
+
+        # Reward improvements (how much closer robot got since last resample)
+        # Position weighted 2x more than orientation
+        reward = (
+            2 * self.pos_improvement * position_scale +
+            self.orient_improvement * orient_scale
+        ) * self._loco_safety_scale
+
+        return reward
+
+    def _reward_track_base_reference_exp(self):
+        # Current actual SE3 error
+        current_se3_error = 2 * self.position_error + self.orientation_error
+
+        # How far off from the reference trajectory (with release tolerance)
+        track_error = torch.abs(self.se3_distance_ref - current_se3_error) - \
+                      self.cfg.rewards.track_reference_release_delta
+
+        # Only penalize positive deviations (beyond release tolerance)
+        track_error = torch.clamp(track_error, min=0.0)
+
+        # Exponential reward for staying on trajectory
+        reward = torch.exp(-track_error / (self.cfg.rewards.track_reference_std ** 2)) * \
+                 0.5 * self._loco_safety_scale
+
+        return reward
