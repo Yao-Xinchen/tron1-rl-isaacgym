@@ -41,22 +41,7 @@ if not robot_type:
     print("\033[1m\033[31mError: Please set the ROBOT_TYPE using 'export ROBOT_TYPE=<robot_type>'.\033[0m")
     sys.exit(1)
 
-if robot_type.startswith("PF"):
-    if robot_type in ["PF_TRON1A", "PF_P441A", "PF_P441B", "PF_P441C", "PF_P441C2"]:
-        from legged_gym.envs.pointfoot_flat.pointfoot_flat import BipedPF
-        from legged_gym.envs.pointfoot_flat.pointfoot_flat_config import BipedCfgPF, BipedCfgPPOPF
-        task_registry.register("pointfoot_flat", BipedPF, BipedCfgPF(), BipedCfgPPOPF())
-    else:
-        print("\033[1m\033[31mError: Input ROBOT_TYPE={}".format(robot_type), 
-        "is not among valid robot types PF_TRON1A, PF_P441A, PF_P441B, PF_P441C, PF_P441C2.\033[0m")
-        sys.exit(1)
-
-elif robot_type == "SF_TRON1A":
-    from legged_gym.envs.solefoot_flat.solefoot_flat import BipedSF
-    from legged_gym.envs.solefoot_flat.solefoot_flat_config import BipedCfgSF, BipedCfgPPOSF
-    task_registry.register("pointfoot_flat", BipedSF, BipedCfgSF(), BipedCfgPPOSF())
-
-elif robot_type == "WF_TRON1A":
+if robot_type == "WF_TRON1A":
     from legged_gym.envs.wheelfoot_flat.wheelfoot_flat import BipedWF
     from legged_gym.envs.wheelfoot_flat.wheelfoot_flat_config import BipedCfgWF, BipedCfgPPOWF
     task_registry.register("pointfoot_flat", BipedWF, BipedCfgWF(), BipedCfgPPOWF())
