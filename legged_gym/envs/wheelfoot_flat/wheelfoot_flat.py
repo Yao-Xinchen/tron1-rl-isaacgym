@@ -134,7 +134,7 @@ class BipedWF(BaseTask):
             self.reset_buf,
             self.extras,
             self.obs_history,
-            self.commands[:, :3] * self.commands_scale,
+            self.commands,
             self.critic_obs_buf # make sure critic_obs update in every for loop
         )
         

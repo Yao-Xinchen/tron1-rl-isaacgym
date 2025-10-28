@@ -1330,11 +1330,6 @@ class BaseTask:
                 device=self.device,
                 requires_grad=False,
             )  # x vel, y vel, yaw vel, heading
-        self.commands_scale = torch.tensor(
-            [self.obs_scales.lin_vel, self.obs_scales.lin_vel, self.obs_scales.ang_vel],
-            device=self.device,
-            requires_grad=False,
-        )  # TODO change this
         self.command_ranges["lin_vel_x"] = torch.zeros(
             self.num_envs,
             2,
